@@ -10,11 +10,6 @@
 #define ERRORSTATE 2
 #define RUNNING 3 
 
-#define IN1 22 // ULN2003 Stepper Motor Driver Pins
-#define IN2 24
-#define IN3 26
-#define IN4 28
-
 // LED # Codes
 // NOTE - > all LEDs on Port C, 0 thru 3 (pins D34 - 37)
 volatile unsigned char* port_c = (unsigned char*) 0x28; // LED Port
@@ -31,6 +26,10 @@ int runCount;
 const int stepsPerRevolution = (2048 / 2);  // change this to fit the number of steps per revolution, or set a max range of motion (2048 = 1 revolution for the 28BYJ-48 Stepper Motor)
 const float maxPotentVoltage = 5.00; // max voltage expected from potentiometer
 int motorPosition;
+#define IN1 22 // ULN2003 Stepper Motor Driver Pins
+#define IN2 24
+#define IN3 26
+#define IN4 28
 
 // LCD and Temperature/Humidity Sensor
 float temp;
