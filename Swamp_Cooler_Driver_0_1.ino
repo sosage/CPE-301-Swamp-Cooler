@@ -15,22 +15,22 @@
 #define IN3 26
 #define IN4 28
 
-#define RLED 33 // LED Pins
-#define YLED 35
-#define GLED 37
-#define BLED 39
+// LED # Codes
+// NOTE - > all LEDs on Port C, 0 thru 3 (pins D34 - 37)
+volatile unsigned char* port_c = (unsigned char*) 0x28; // LED Port
+volatile unsigned char* ddr_c = (unsigned char*) 0x27;
+#define RED 3
+#define YLW 2
+#define GRN 1
+#define BLU 0
 
-#define RED 0 // LED Color Codes
-#define YEL 1
-#define GRN 2
-#define BLU 3
-
-int state = 0;
+int state;
+int runCount;
 
 // Stepper Motor
 const int stepsPerRevolution = (2048 / 2);  // change this to fit the number of steps per revolution, or set a max range of motion (2048 = 1 revolution for the 28BYJ-48 Stepper Motor)
 const float maxPotentVoltage = 5.00; // max voltage expected from potentiometer
-int motorPosition = 0;
+int motorPosition;
 
 // LCD and Temperature/Humidity Sensor
 float temp;
@@ -38,7 +38,10 @@ float humid;
 
 // FUNCTION INITIALIZATIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 int stateCheckAndSwitch(void); // check if state switch is needed and return state #
-void setLED(int, bool); // set LED to on or off, syntax: (LED #, on/off) (0 = RED, 1 = YELLOW, 2 = GREEN, 3 = BLUE)
+
+void LEDon(int);
+void LEDoff(int);
+void allLEDoff(void);
 
 void lcdDisplayError(void);
 void lcdDisplayTempHumid(float, float);
@@ -63,24 +66,25 @@ Stepper myStepper(stepsPerRevolution, IN1, IN3, IN2, IN4); // establishing signa
 // SETUP ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 void setup() {
   Serial.begin(9600);
+  Serial.println("Setup Block"); // For test purposes
   myStepper.setSpeed(5); // step motor settings
   myStepper.step(0);
-  Serial.println("Setup Block"); // For test purposes
+  *ddr_c |= 0b00001111; // LED pins set to output
   delay(1000); // Delay to allow time for serial monitor to open
-  state = 1; // Set initial state
   
   // LCD
   lcd.begin(16, 2); //Tell the LCD that it is a 16x2 LCD
   temp = 72.5911;
   humid = 25.8744;
 
-  Serial.println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"); // For test purposes
-  Serial.println("Main Loop"); // For test purposes
+  Serial.println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+  Serial.println("Main Loop");
+  Serial.print("State set to "); 
 }
 
 // MAIN LOOP ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 void loop() {
-  state = 2; // For test purposes
+  state = RUNNING; // Set initial state for test purposes
   switch (state) {
   /* NOTE ->  FOR ALL STATES, realtime clock must be used to report via serial port the
   * time of each state transition and any changes to the stepper motor
@@ -91,34 +95,43 @@ void loop() {
 
   case DISABLED : // 0
     Serial.println("DISABLED"); // For test purposes
-    // report state changes
+    allLEDoff();
+    LEDon(YLW);
     reportVentChange(updateVentPosition());
+    // report state changes
     break;
 
   case IDLING : // 1
     Serial.println("IDLING"); // For test purposes
     // report state changes
+    allLEDoff();
+    LEDon(GRN);
+    lcdDisplayTempHumid(temp, humid);
     reportVentChange(updateVentPosition());
     // monitor temp and humidity
     // report temp and humidity to LCD once per minute
     // stop button turns off fan (if on) and change to DISABLED
-    lcdDisplayTempHumid(temp, humid);
     break;
 
   case ERRORSTATE : // 2
     Serial.println("ERRORSTATE"); // For test purposes
     // report state changes
+    allLEDoff();
+    LEDon(RED);
+    lcdDisplayError();
+    lcdDisplayTempHumid(temp, humid);
     reportVentChange(updateVentPosition());
     // monitor temp and humidity
     // report temp and humidity to LCD once per minute
     // stop button turns off fan (if on) and change to DISABLED
-    lcdDisplayError();
-    lcdDisplayTempHumid(temp, humid);
     break;
 
   case RUNNING : // 3
     Serial.println("RUNNING"); // For test purposes
     // report state changes
+    allLEDoff();
+    LEDon(BLU);
+    lcdDisplayTempHumid(temp, humid);
     reportVentChange(updateVentPosition());
     // blue LED on, all other LEDs off
     // fan motor on
@@ -127,7 +140,6 @@ void loop() {
     // stop button turns off fan (if on) and change to DISABLED
     // change to IDLE if temp drops below threshold
     // change to ERROR if water becomes too low
-    lcdDisplayTempHumid(temp, humid);
     break;
  
   } // End switch-case block
@@ -177,6 +189,51 @@ void wipeLCD(){
 // WATER SENSOR FUNCTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // NOTE -> Do not provide continuous voltage to water sensor, will result in corrosion
 
+// LED FUNCTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void LEDon(int num){
+  switch (num){
+    case BLU: // 0
+      *port_c |= 0b00000001;
+      break;
+      
+    case GRN: // 1
+      *port_c |= 0b00000010;
+      break;
+      
+    case YLW: // 2
+      *port_c |= 0b00000100;
+      break;
+      
+    case RED: // 3
+      *port_c |= 0b00001000;
+      break;
+  }
+}
+
+void LEDoff(int num){
+  switch (num){
+    case BLU: // 0
+      *port_c &= 0b11111110;
+      break;
+      
+    case GRN: // 1
+      *port_c &= 0b11111101;
+      break;
+      
+    case YLW: // 2
+      *port_c &= 0b11111011;
+      break;
+      
+    case RED: // 3
+      *port_c &= 0b11110111;
+      break;
+  }
+}
+
+void allLEDoff(void){
+  *port_c &= 0b11110000;
+}
+
 // STEPPER MOTOR/POTENTIOMETER FUNCTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 int updateVentPosition(void){ // change vent position according to potentiometer setting and return steps changed
   int potentValue;
@@ -185,19 +242,13 @@ int updateVentPosition(void){ // change vent position according to potentiometer
 
   if(state != DISABLED){ // if NOT in disabled state, change vent according to potentiometer and report step changes to vent
     //Serial.println("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"); // For test purposes
-    //Serial.println("Obtaining potentiometer voltage... "); // For test purposes
+    Serial.println("Obtaining potentiometer voltage... "); // For test purposes
     delay(3000); // allow time for setting to be selected
     potentValue = analogRead(A8);
     // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - max V):
     float voltage = potentValue * (maxPotentVoltage / 1023.0);
 
-    // print out the value you read:
-    //Serial.print("Potentiometer voltage: "); // For test purposes
-    //Serial.println(voltage);
-
     //convert potentiometer voltage to changes in motor (0V = 0, max V = stepsPerRevolution):
-    //Serial.print("Motor position: "); // For test purposes
-    //Serial.println(motorPosition);
     if(voltage < 1){ // if voltage is less than 1.00V, full close vent
       desiredMotorPosition = 0;
     } else if(voltage > 4){ // if voltage greater than 4.00V, full open vent
@@ -205,13 +256,9 @@ int updateVentPosition(void){ // change vent position according to potentiometer
     } else { // otherwise, non-preset angle of vent
       desiredMotorPosition = ((stepsPerRevolution / maxPotentVoltage) * voltage); // linear y = mx + b equation to achieve the 0V = 0 steps and max V = maxSteps behavior
     }
-    //Serial.print("Desired motor position: "); // For test purposes
-    //Serial.println(desiredMotorPosition); // For test purposes
     motorChange = (desiredMotorPosition - motorPosition);
   
     // step motor to desired positon:
-    //Serial.print("Motor changing: "); // For test purposes
-    //Serial.println(motorChange); // For test purposes
     myStepper.step(motorChange);
     motorPosition = motorPosition + motorChange;
     delay(1000); // To prevent motor stress if position is changing rapidly
@@ -219,6 +266,7 @@ int updateVentPosition(void){ // change vent position according to potentiometer
   } else {
     return 0; // if in disabled state, do not read potentiometer and report 0 steps of vent change
   }
+  
 }
 
 int getVentPosition(void){ // report stepper motor position
