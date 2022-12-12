@@ -141,7 +141,7 @@ void U0putchar(unsigned char U0pdata)
   *myUDR0 = U0pdata;
 }
 
-/* Not needed? Assuming this is for UART serial.print, so keeping it in for now.
+/* Not needed?
 unsigned char U0kbhit()
 {
   return *myUCSR0A & RDA;
