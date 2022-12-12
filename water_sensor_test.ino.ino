@@ -1,3 +1,6 @@
+#define RDA 0x80
+#define TBE 0x20
+
 volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0; // USART 0A Control and Status Register
 volatile unsigned char *myUCSR0B = (unsigned char *)0x00C1; // USART 0B Control and Status Register
 volatile unsigned char *myUCSR0C = (unsigned char *)0x00C2; // USART 0C Control and Status Register
@@ -9,10 +12,8 @@ volatile unsigned char *my_ADCSRB   = (unsigned char*) 0x7B; // ADC Control and 
 volatile unsigned char *my_ADCSRA   = (unsigned char*) 0x7A; // ADC Control and Status Register A
 volatile unsigned int  *my_ADC_DATA = (unsigned int*)  0x78; // ADC Data Register
 
-volatile unsigned char* port_b = (unsigned char*) 0x25; // Timer/Counter Control Register B
-volatile unsigned char* ddr_b  = (unsigned char*) 0x24; // Timer/Counter Control Register B
-volatile unsigned char* port_c = (unsigned char*) 0x23; // General Timer/Counter Control Register
-volatile unsigned char* ddr_c  = (unsigned char*) 0x22; // EEARH - EEPROM Address Register High Byte
+volatile unsigned char* port_a = (unsigned char*) 0x22; // Port A Data Register
+volatile unsigned char* ddr_a  = (unsigned char*) 0x21; // Port A Direction Register
 
 void setup() 
 {
@@ -21,25 +22,25 @@ void setup()
   // setup the ADC
   adc_init();
   // ouput
-  *ddr_b |= 0b10000001;
+  *ddr_a |= 0b00000010; //pin D23 set to output
 }
 
 void loop() 
 {
-  // get the reading from the ADC
-  unsigned int adc_reading = adc_read(0);
-  // print it to the serial port
-  print_int(adc_reading);
-
-  if (adc_reading >= 450) { //500 for shadow, 350 for absolute darkness
-    *port_b |= 0b10000001; //PB7 High
-  }
-  else {
-    *port_b &= 0b01111110; //PB7 Low
-  }
+  Serial.println(checkWtr());
+  delay(1000);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+float checkWtr(void){
+  *port_a |= 0b00000010; //apply voltage to sensor, pin D23 set HIGH
+  delay(500); //allow voltage to stabilise
+  unsigned int adc_reading = adc_read(0); //get the reading from the ADC, analog input pin A0
+  *port_a &= 0b11111101; //cut off voltage to sensor pin D23 set LOW
+  float wtrVoltage = adc_reading * (5.0 / 1023.0); //convert 0-1023 analog signal to voltage
+  return wtrVoltage;
+}
 
 void adc_init()
 {
@@ -134,6 +135,13 @@ void U0init(int U0baud)
  *myUBRR0  = tbaud;
 }
 
+void U0putchar(unsigned char U0pdata)
+{
+  while((*myUCSR0A & TBE)==0);
+  *myUDR0 = U0pdata;
+}
+
+/* Not needed? Assuming this is for UART serial.print, so keeping it in for now.
 unsigned char U0kbhit()
 {
   return *myUCSR0A & RDA;
@@ -142,10 +150,4 @@ unsigned char U0kbhit()
 unsigned char U0getchar()
 {
   return *myUDR0;
-}
-
-void U0putchar(unsigned char U0pdata)
-{
-  while((*myUCSR0A & TBE)==0);
-  *myUDR0 = U0pdata;
-}
+}*/
