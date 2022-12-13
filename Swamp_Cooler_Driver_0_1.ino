@@ -1,6 +1,8 @@
 // LIBRARIES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #include <LiquidCrystal.h> // LCD Display
 #include <Stepper.h> // Stepper Motor
+#include "DHT.h" // Temp/Humidity by Adafruit
+#include "RTClib.h" // Real Time Clock by Adafruit
 
 // GLOBAL VARIABLES & MACROS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /* NOTE -> each state has an assigned integer for ease of programming.
@@ -12,7 +14,7 @@
 
 int state;
 int currentTime; // 4-digit 24-hour format, 0000 = 12:00AM, 1400 = 2:00PM
-const char* currentDate; // 
+const char* currentDate; // const string, e.g. "date/date/date"
 int runCount;
 
 // Water Sensor
@@ -40,7 +42,6 @@ const float maxWtrVoltage = 5.00; // max voltage expected from water sensor
 #define YLW 2
 #define GRN 1
 #define BLU 0
-
 // NOTE - > all LEDs on Port C, 0 thru 3 (pins D34 - 37)
 volatile unsigned char* port_c = (unsigned char*) 0x28; // LED Port
 volatile unsigned char* ddr_c = (unsigned char*) 0x27;
@@ -50,20 +51,34 @@ volatile unsigned char* ddr_c = (unsigned char*) 0x27;
 #define IN2 24
 #define IN3 26
 #define IN4 28
-
 const int stepsPerRevolution = (2048 / 2);  // change this to fit the number of steps per revolution, or set a max range of motion (2048 = 1 revolution for the 28BYJ-48 Stepper Motor)
 const float maxPotentVoltage = 5.00; // max voltage expected from potentiometer
+Stepper myStepper(stepsPerRevolution, IN1, IN3, IN2, IN4); // establishing signal pins for use by stepper motor driver componenent
 int motorPosition;
 
 // LCD and Temperature/Humidity Sensor
+#define DHTPIN 10
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal lcd(52, 53, 48, 49, 46, 47);
+  /*  ^^^ establishing pins for use by LCD in the following order:
+   *  lcd(RS, E, DB4, DB5, DB6, DB7) - 4 data lines 
+   *  for other syntaxes, see documentation for library:
+   *  https://www.arduino.cc/reference/en/libraries/liquidcrystal/
+   */
+volatile unsigned int* portH = (unsigned int*)0x102;
+volatile unsigned int* ddrH = (unsigned int*)0x101;
 float temp;
 float humid;
+
+// Fan Motor
+bool fanOn = false;
 
 // FUNCTION INITIALIZATIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 void reportStateChange(char);
 
 float checkWtr(void); // check voltage readout of water sensor
-// NOTE -> Sensor not-submerged: <0.6V, partially submerged ~0.7V, fully submerged ~0.9V
+// NOTE -> Sensor not-submerged: <0.7V, partially submerged ~0.7V, fully submerged ~0.9V, threshold ~0.75V
 
 void LEDon(int);
 void LEDoff(int);
@@ -77,23 +92,19 @@ int updateVentPosition(void); // change vent position according to potentiometer
 int getVentPosition(void); // return stepper motor position
 void reportVentChange(int); // print changes to vent steps
 
-// PIN INITIALIZATIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-LiquidCrystal lcd(52, 53, 48, 49, 46, 47);
-  /*  ^^^ establishing pins for use by LCD in the following order:
-   *  lcd(RS, E, DB4, DB5, DB6, DB7) - 4 data lines 
-   *  for other syntaxes, see documentation for library:
-   *  https://www.arduino.cc/reference/en/libraries/liquidcrystal/
-   */
-Stepper myStepper(stepsPerRevolution, IN1, IN3, IN2, IN4); // establishing signal pins for use by stepper motor driver componenent
-
 // SETUP ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 void setup() {
-  // setup the UART
+  // UART and Serial Monitor
   U0init(9600);
-  // setup the ADC
-  adc_init();
   delay(1000); // Delay to allow time for serial monitor to open
   printString("Setup Block\n");
+  
+  // ADC
+  adc_init();
+
+  // DHT
+  dht.begin();
+  *ddrH |= 0x60;
 
   // Vent
   myStepper.setSpeed(5); // step motor settings
@@ -113,7 +124,7 @@ void setup() {
 
   // Misc
   currentTime = 2401;
-  currentDate = "12/12/2022";
+  currentDate = "13/31/2022";
   state = IDLING; // Set initial state for test purpose
 
   printString("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nMain Loop\n");
@@ -134,8 +145,8 @@ void loop() {
   reportStateChange("DISABLED");
   while(state == DISABLED){
     LEDon(YLW);
-    // FAN to OFF
-    // START button monitored by ISR
+    fanTemp(0.00); // FAN to OFF
+    // START button monitored by ISR -> IDLE
     reportVentChange(updateVentPosition()); // always reports 0 in DISABLED state
     if(state != DISABLED){ // check if need to change state or continue running
       allLEDoff();
@@ -146,7 +157,6 @@ void loop() {
 
   case IDLING : // 1 * * * * * * * * * * * * * *
   reportStateChange("IDLING");
-  lcdDisplayTempHumid(temp, humid);
   while(state == IDLING){
     LEDon(GRN);
     if(checkWtr() <= 0.75){ // check water level, if voltage is below threshold change to Errorstate
@@ -154,10 +164,16 @@ void loop() {
       allLEDoff();
       break;
     }
-    // MONITOR temp and humidity
+    humid = getHumid(); // MONITOR temp and humidity, turn fan on if temp above threshold
+    temp = getTemp();
     lcdDisplayTempHumid(temp, humid); // once per minute
+    if(fanTemp(temp)){
+      state = RUNNING;
+      allLEDoff();
+      break;
+    }
     reportVentChange(updateVentPosition());
-    // STOP button turns off fan (if on) and change to DISABLED
+    // START/STOP button turns off fan (if on) and change to DISABLED
     if(state != IDLING){ // check if need to change state or continue running
       allLEDoff();
       break;
@@ -169,16 +185,18 @@ void loop() {
   reportStateChange("ERRORSTATE");
   while(state == ERRORSTATE){
     LEDon(RED);
-    // Motor is OFF and should not start
+    fanTemp(0.00); // Motor is OFF and should not start
     // RESET button should trigger change to IDLE if water is good (checkWtr() > 0.6 [partial] OR > 8.0 [full])
     lcdDisplayError();
+    // check reset button
     if(checkWtr() > 0.75){ // check water level, if voltage is above threshold change to Idling
       state = IDLING;
       allLEDoff();
       break;
     }
-    // monitor temp and humidity
-    //lcdDisplayTempHumid(temp, humid); // once per minute
+    humid = getHumid(); // MONITOR temp and humidity
+    temp = getTemp();
+    lcdDisplayTempHumid(temp, humid); // once per minute
     reportVentChange(updateVentPosition());
     if(state != ERRORSTATE){ // check if need to change state or continue running
       allLEDoff();
@@ -196,7 +214,13 @@ void loop() {
       allLEDoff();
       break;
     }
-    // monitor temp and humidity
+    humid = getHumid(); // MONITOR temp and humidity, turn fan on if temp above threshold
+    temp = getTemp();
+    if(!(fanTemp(temp)) ){
+      state = IDLING;
+      allLEDoff();
+      break;
+    }
     lcdDisplayTempHumid(temp, humid); // once per minute
     reportVentChange(updateVentPosition());
     // blue LED on, all other LEDs off
@@ -306,7 +330,7 @@ void lcdDisplayTempHumid(float t, float h){ // Displays atmospheric conditions t
   // Alternatively, t max = XX.XXX... and h max = XX.XXX... will be correct but with rounding error
   lcd.clear();
   lcd.setCursor(0, 0); //Set invisible cursor to first character, first line (x = 0, y = 0)
-  lcd.print("Temp: "); lcd.print(t); lcd.print("*F"); // Output "Temp: X*F" at cursor
+  lcd.print("Temp: "); lcd.print(t); lcd.print("*C"); // Output "Temp: X*F" at cursor
   lcd.setCursor(0, 1); // Set invisible cursor to first character, second line (x = 0, y = -1)
   lcd.print("Humidity: "); lcd.print(h); lcd.print("%");
   delay(3000); // Display for time
@@ -482,4 +506,31 @@ void reportVentChange(int change){
   } else{
     printString("No vent change detected.\n");
   }
+}
+
+// TEMPERATURE/HUMIDTY & FAN FUNCTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bool fanTemp(float tempC) { // take in temp reading and turn fan on or off
+  if (tempC >= 21) {
+    *portH |= 0x20;
+    *portH |= 0x40;
+
+    return true;
+  } 
+  else if (tempC < 21) {
+    *portH &= 0xDF;
+
+    return false;
+  }
+}
+
+float getHumid(){
+  float humi = dht.readHumidity();
+
+  return humi;
+}
+
+float getTemp() {
+  float tempC = dht.readTemperature();
+
+  return tempC;
 }
